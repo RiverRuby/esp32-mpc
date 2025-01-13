@@ -1,2 +1,3 @@
 # esp32-mpc
-MPC with hardware devices, using Arduino C++
+
+MPC with ESP32 hardware devices, using Arduino C++
