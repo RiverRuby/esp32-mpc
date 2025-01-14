@@ -84,49 +84,66 @@ void sendWireLabelsOT(WiFiClient& client, const GarbledCircuit::WireLabel& label
     mbedtls_ecp_mul(ecc.getGroup(), &A, &a, &ecc.getGroup()->G, 
                     mbedtls_ctr_drbg_random, ecc.getRNG());
     
-    Serial.println("Garbler A = aG computed");
+    // Debug output for 'a'
+    Serial.print("Garbler scalar a: ");
+    size_t a_bytes[32];
+    mbedtls_mpi_write_binary(&a, (unsigned char*)a_bytes, sizeof(a_bytes));
+    for(int i = 0; i < 32; i++) {
+        Serial.printf("%02X ", ((uint8_t*)a_bytes)[i]);
+    }
+    Serial.println();
     
-    // Send A to receiver
-    uint8_t A_buf[65];  // Explicitly use 65 bytes for clarity
+    // Send A to receiver and debug output
+    uint8_t A_buf[65];
     size_t olen;
-    int ret = mbedtls_ecp_point_write_binary(ecc.getGroup(), &A, 
+    mbedtls_ecp_point_write_binary(ecc.getGroup(), &A, 
                                   MBEDTLS_ECP_PF_UNCOMPRESSED,
                                   &olen, A_buf, sizeof(A_buf));
-    if (ret != 0 || olen != 65) {
-        Serial.println("Error encoding point");
-        return;
+    Serial.print("Garbler sending A point: ");
+    for(size_t i = 0; i < olen; i++) {
+        Serial.printf("%02X ", A_buf[i]);
     }
-    client.write(A_buf, 65);
-
-    Serial.println("Garbler sent A to evaluator");
+    Serial.println();
     
-    // Receive B
+    client.write(A_buf, ECC_POINT_SIZE);
+
+    // Receive and debug output B
     uint8_t B_buf[ECC_POINT_SIZE];
     while (client.available() < ECC_POINT_SIZE) delay(10);
     client.readBytes(B_buf, ECC_POINT_SIZE);
-    mbedtls_ecp_point_read_binary(ecc.getGroup(), &B, B_buf, ECC_POINT_SIZE);
-
-    Serial.println("Garbler received B");
+    Serial.print("Garbler received B point: ");
+    for(int i = 0; i < ECC_POINT_SIZE; i++) {
+        Serial.printf("%02X ", B_buf[i]);
+    }
+    Serial.println();
     
-    // Compute k0 = H(B^a)
+    mbedtls_ecp_point_read_binary(ecc.getGroup(), &B, B_buf, ECC_POINT_SIZE);
+    
+    // Debug output for k0 = B^a
+    uint8_t k0_buf[ECC_POINT_SIZE];
     mbedtls_ecp_point k0_point;
     mbedtls_ecp_point_init(&k0_point);
     ecc.pointMultiply(k0_point, a, B);
-    
-    uint8_t k0_buf[ECC_POINT_SIZE];
     mbedtls_ecp_point_write_binary(ecc.getGroup(), &k0_point,
                                   MBEDTLS_ECP_PF_UNCOMPRESSED,
                                   &olen, k0_buf, sizeof(k0_buf));
-
-    Serial.println("Garbler computed B^a");
     
-    // Hash the point to get the key
+    Serial.print("Garbler k0 point (B^a): ");
+    for(size_t i = 0; i < olen; i++) {
+        Serial.printf("%02X ", k0_buf[i]);
+    }
+    Serial.println();
+    
+    // Hash and debug output k0
     uint8_t k0_key[32];
     mbedtls_sha256(k0_buf, olen, k0_key, 0);
-
-    Serial.println("Garbler computed k0 = H(B^a)");
+    Serial.print("Garbler k0 key: ");
+    for(int i = 0; i < 32; i++) {
+        Serial.printf("%02X ", k0_key[i]);
+    }
+    Serial.println();
     
-    // Compute k1 = H((B/A)^a) using mbedtls_ecp_muladd
+    // Debug output for k1 computation
     mbedtls_ecp_point k1_point;
     mbedtls_ecp_point_init(&k1_point);
 
@@ -148,12 +165,21 @@ void sendWireLabelsOT(WiFiClient& client, const GarbledCircuit::WireLabel& label
                                   MBEDTLS_ECP_PF_UNCOMPRESSED,
                                   &olen, k1_buf, sizeof(k1_buf));
     
+    Serial.print("Garbler k1 point (B/A)^a: ");
+    for(size_t i = 0; i < olen; i++) {
+        Serial.printf("%02X ", k1_buf[i]);
+    }
+    Serial.println();
+    
     uint8_t k1_key[32];
     mbedtls_sha256(k1_buf, olen, k1_key, 0);
-
-    Serial.println("Garbler computed k1 = H(a*B - a*A)");
+    Serial.print("Garbler k1 key: ");
+    for(int i = 0; i < 32; i++) {
+        Serial.printf("%02X ", k1_key[i]);
+    }
+    Serial.println();
     
-    // Encrypt and send wire labels
+    // Debug output encrypted labels
     uint8_t e0[sizeof(GarbledCircuit::WireLabel)];
     uint8_t e1[sizeof(GarbledCircuit::WireLabel)];
     
@@ -161,14 +187,22 @@ void sendWireLabelsOT(WiFiClient& client, const GarbledCircuit::WireLabel& label
         e0[i] = ((uint8_t*)&label0)[i] ^ k0_key[i % 32];
         e1[i] = ((uint8_t*)&label1)[i] ^ k1_key[i % 32];
     }
-
-    Serial.println("Garbler encrypted wire labels");
+    
+    Serial.print("Garbler encrypted label 0: ");
+    for(size_t i = 0; i < sizeof(GarbledCircuit::WireLabel); i++) {
+        Serial.printf("%02X ", e0[i]);
+    }
+    Serial.println();
+    
+    Serial.print("Garbler encrypted label 1: ");
+    for(size_t i = 0; i < sizeof(GarbledCircuit::WireLabel); i++) {
+        Serial.printf("%02X ", e1[i]);
+    }
+    Serial.println();
     
     client.write(e0, sizeof(e0));
     client.write(e1, sizeof(e1));
 
-    Serial.println("Garbler sent labels to receiver");
-    
     // Cleanup
     mbedtls_ecp_point_free(&A);
     mbedtls_ecp_point_free(&B);
@@ -259,6 +293,7 @@ void loop() {
         }
 
         bool result = client.read() == 1;
+        Serial.println(result ? "It's a match!" : "No match");
         
         if (result) {
             // Blink for 5 seconds then stay on

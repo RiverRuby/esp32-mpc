@@ -78,31 +78,48 @@ GarbledCircuit::WireLabel receiveWireLabelOT(WiFiClient& client, bool choice) {
     Serial.println("Evaluator ECP variables initialized");
     
     // Receive A from sender
-    uint8_t A_buf[33];
-    while (client.available() < 33) {
+    uint8_t A_buf[ECC_POINT_SIZE];
+    while (client.available() < ECC_POINT_SIZE) {
       Serial.println(client.available());
       delay(1000);
     }
-    client.readBytes(A_buf, 33);
-
-    Serial.println("Evaluator received A from garbler");
+    client.readBytes(A_buf, ECC_POINT_SIZE);
+    
+    Serial.print("Evaluator received A point: ");
+    for(int i = 0; i < ECC_POINT_SIZE; i++) {
+        Serial.printf("%02X ", A_buf[i]);
+    }
+    Serial.println();
 
     mbedtls_ecp_point_read_binary(ecc.getGroup(), &A, A_buf, ECC_POINT_SIZE);
     
-    Serial.println("Evaluator read A from garbler");
-    
-    // Generate random b
+    // Generate random b and debug output
     ecc.generateRandomScalar(b);
+    uint8_t b_bytes[32];
+    mbedtls_mpi_write_binary(&b, (unsigned char*)b_bytes, sizeof(b_bytes));
+    Serial.print("Evaluator scalar b: ");
+    for(int i = 0; i < 32; i++) {
+        Serial.printf("%02X ", b_bytes[i]);
+    }
+    Serial.println();
     
-    Serial.println("Evaluator generated random b");
-    
-    // Compute B = g^b if choice=0, or B = A*g^b if choice=1
+    // Compute g^b
     mbedtls_ecp_point temp;
     mbedtls_ecp_point_init(&temp);
     mbedtls_ecp_mul(ecc.getGroup(), &temp, &b, &ecc.getGroup()->G, 
                     mbedtls_ctr_drbg_random, ecc.getRNG());
 
-    Serial.println("Evaluator generated g^b");
+    // Debug output for g^b
+    uint8_t gb_buf[ECC_POINT_SIZE];
+    size_t olen;
+    mbedtls_ecp_point_write_binary(ecc.getGroup(), &temp,
+                                  MBEDTLS_ECP_PF_UNCOMPRESSED,
+                                  &olen, gb_buf, sizeof(gb_buf));
+    Serial.print("Evaluator g^b point: ");
+    for(size_t i = 0; i < olen; i++) {
+        Serial.printf("%02X ", gb_buf[i]);
+    }
+    Serial.println();
     
     if (choice) {
         // B = A + g^b using muladd: B = 1*A + 1*g^b
@@ -118,34 +135,50 @@ GarbledCircuit::WireLabel receiveWireLabelOT(WiFiClient& client, bool choice) {
     } else {
         // B = g^b
         mbedtls_ecp_copy(&B, &temp);
+
+        Serial.println("Evaluator computed B = g^b");
     }
     
     Serial.println("Evaluator computed B");
     
     // Send B to sender
     uint8_t B_buf[ECC_POINT_SIZE];
-    size_t olen;
     mbedtls_ecp_point_write_binary(ecc.getGroup(), &B,
                                   MBEDTLS_ECP_PF_UNCOMPRESSED,
                                   &olen, B_buf, sizeof(B_buf));
+    
+    Serial.print("Evaluator sending B point: ");
+    for(size_t i = 0; i < olen; i++) {
+        Serial.printf("%02X ", B_buf[i]);
+    }
+    Serial.println();
+    
     client.write(B_buf, ECC_POINT_SIZE);
     
-    Serial.println("Evaluator sent B to garbler");
-    
-    // Compute k = H(A^b)
+    // Compute k = A^b
     mbedtls_ecp_point k_point;
     mbedtls_ecp_point_init(&k_point);
     ecc.pointMultiply(k_point, b, A);
-    
-    Serial.println("Evaluator computed A^b");
     
     uint8_t k_buf[ECC_POINT_SIZE];
     mbedtls_ecp_point_write_binary(ecc.getGroup(), &k_point,
                                   MBEDTLS_ECP_PF_UNCOMPRESSED,
                                   &olen, k_buf, sizeof(k_buf));
     
+    Serial.print("Evaluator k point (A^b): ");
+    for(size_t i = 0; i < olen; i++) {
+        Serial.printf("%02X ", k_buf[i]);
+    }
+    Serial.println();
+    
     uint8_t key[32];
     mbedtls_sha256(k_buf, olen, key, 0);
+    
+    Serial.print("Evaluator derived key: ");
+    for(int i = 0; i < 32; i++) {
+        Serial.printf("%02X ", key[i]);
+    }
+    Serial.println();
     
     // Receive encrypted wire labels
     uint8_t e0[sizeof(GarbledCircuit::WireLabel)];
@@ -154,7 +187,17 @@ GarbledCircuit::WireLabel receiveWireLabelOT(WiFiClient& client, bool choice) {
     client.readBytes(e0, sizeof(e0));
     client.readBytes(e1, sizeof(e1));
     
-    Serial.println("Evaluator received encrypted wire labels");
+    Serial.print("Evaluator received e0: ");
+    for(size_t i = 0; i < sizeof(GarbledCircuit::WireLabel); i++) {
+        Serial.printf("%02X ", e0[i]);
+    }
+    Serial.println();
+    
+    Serial.print("Evaluator received e1: ");
+    for(size_t i = 0; i < sizeof(GarbledCircuit::WireLabel); i++) {
+        Serial.printf("%02X ", e1[i]);
+    }
+    Serial.println();
     
     // Decrypt chosen wire label
     GarbledCircuit::WireLabel result;
@@ -164,7 +207,11 @@ GarbledCircuit::WireLabel receiveWireLabelOT(WiFiClient& client, bool choice) {
         ((uint8_t*)&result)[i] = encrypted[i] ^ key[i % 32];
     }
     
-    Serial.println("Evaluator decrypted chosen wire label");
+    Serial.print("Evaluator decrypted label: ");
+    for(size_t i = 0; i < sizeof(GarbledCircuit::WireLabel); i++) {
+        Serial.printf("%02X ", ((uint8_t*)&result)[i]);
+    }
+    Serial.println();
     
     // Cleanup
     mbedtls_ecp_point_free(&A);
@@ -232,14 +279,6 @@ void loop() {
                 while (client.available() < GarbledCircuit::KEY_SIZE) delay(10);
                 client.readBytes(senderLabel.key, GarbledCircuit::KEY_SIZE);
                 
-                // Receive my possible wire labels
-                GarbledCircuit::WireLabel b0, b1;
-                while (client.available() < 2 * GarbledCircuit::KEY_SIZE) delay(10);
-                client.readBytes(b0.key, GarbledCircuit::KEY_SIZE);
-                b0.permute_bit = false;
-                client.readBytes(b1.key, GarbledCircuit::KEY_SIZE);
-                b1.permute_bit = true;
-                
                 // Select my wire label based on my input
                 GarbledCircuit::WireLabel myLabel = receiveWireLabelOT(client, b);
                 
@@ -265,6 +304,7 @@ void loop() {
                 
                 if (decrypted) {
                     Serial.println("Evaluator successfully decrypted result");
+                    Serial.println(result ? "It's a match!" : "No match.")
                     client.write(result ? 1 : 0);
                     
                     if (result) {
