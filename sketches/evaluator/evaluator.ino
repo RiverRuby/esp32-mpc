@@ -314,7 +314,7 @@ void loop() {
                 
                 if (decrypted) {
                     Serial.println("Evaluator successfully decrypted result");
-                    Serial.println(result ? "It's a match!" : "No match.")
+                    Serial.println(result ? "It's a match!\n" : "No match.\n");
                     client.write(result ? 1 : 0);
                     
                     if (result) {
