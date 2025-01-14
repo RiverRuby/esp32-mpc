@@ -47,7 +47,17 @@ public:
     
     // Generate random scalar
     void generateRandomScalar(mbedtls_mpi& scalar) {
-        mbedtls_mpi_fill_random(&scalar, 32, mbedtls_ctr_drbg_random, &ctr_drbg);
+        // Initialize scalar to 0
+        mbedtls_mpi_lset(&scalar, 0);
+        
+        // Generate random bytes for the scalar
+        unsigned char buf[32];
+        mbedtls_ctr_drbg_random(&ctr_drbg, buf, sizeof(buf));
+        
+        // Import random bytes into MPI
+        mbedtls_mpi_read_binary(&scalar, buf, sizeof(buf));
+        
+        // Reduce modulo the curve order
         mbedtls_mpi_mod_mpi(&scalar, &scalar, &group.N);
     }
     

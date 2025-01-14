@@ -51,7 +51,17 @@ public:
     
     // Generate random scalar
     void generateRandomScalar(mbedtls_mpi& scalar) {
-        mbedtls_mpi_fill_random(&scalar, 32, mbedtls_ctr_drbg_random, &ctr_drbg);
+        // Initialize scalar to 0
+        mbedtls_mpi_lset(&scalar, 0);
+        
+        // Generate random bytes for the scalar
+        unsigned char buf[32];
+        mbedtls_ctr_drbg_random(&ctr_drbg, buf, sizeof(buf));
+        
+        // Import random bytes into MPI
+        mbedtls_mpi_read_binary(&scalar, buf, sizeof(buf));
+        
+        // Reduce modulo the curve order
         mbedtls_mpi_mod_mpi(&scalar, &scalar, &group.N);
     }
     
@@ -71,11 +81,10 @@ void sendWireLabelsOT(WiFiClient& client, const GarbledCircuit::WireLabel& label
     static ECCHelper ecc;
     
     mbedtls_ecp_point A, B;
-    mbedtls_mpi a, neg_a;
+    mbedtls_mpi a;
     mbedtls_ecp_point_init(&A);
     mbedtls_ecp_point_init(&B);
     mbedtls_mpi_init(&a);
-    mbedtls_mpi_init(&neg_a);
 
     Serial.println("Garbler ECP variables initialized");
     
@@ -86,15 +95,15 @@ void sendWireLabelsOT(WiFiClient& client, const GarbledCircuit::WireLabel& label
     
     // Debug output for 'a'
     Serial.print("Garbler scalar a: ");
-    size_t a_bytes[32];
+    uint8_t a_bytes[32];
     mbedtls_mpi_write_binary(&a, (unsigned char*)a_bytes, sizeof(a_bytes));
     for(int i = 0; i < 32; i++) {
-        Serial.printf("%02X ", ((uint8_t*)a_bytes)[i]);
+        Serial.printf("%02X ", a_bytes[i]);
     }
     Serial.println();
     
     // Send A to receiver and debug output
-    uint8_t A_buf[65];
+    uint8_t A_buf[ECC_POINT_SIZE];
     size_t olen;
     mbedtls_ecp_point_write_binary(ecc.getGroup(), &A, 
                                   MBEDTLS_ECP_PF_UNCOMPRESSED,
@@ -144,28 +153,29 @@ void sendWireLabelsOT(WiFiClient& client, const GarbledCircuit::WireLabel& label
     Serial.println();
     
     // Debug output for k1 computation
-    mbedtls_ecp_point k1_point;
+    mbedtls_ecp_point k1_point, temp_point;
     mbedtls_ecp_point_init(&k1_point);
+    mbedtls_ecp_point_init(&temp_point);
 
-    mbedtls_mpi one;
+    mbedtls_mpi one, neg_one;
     mbedtls_mpi_init(&one);
+    mbedtls_mpi_init(&neg_one);
     mbedtls_mpi_lset(&one, 1);
+    mbedtls_mpi_copy(&neg_one, &one);
+    mbedtls_mpi_sub_mpi(&neg_one, &ecc.getGroup()->N, &neg_one);  // neg_one = N - 1
     
-    // Compute -a
-    mbedtls_mpi_lset(&neg_a, -1);
-    mbedtls_mpi_mul_mpi(&neg_a, &neg_a, &a);
-    
-    // Use mbedtls_ecp_muladd to compute k1 = a * B + (-a) * A
-    mbedtls_ecp_muladd(ecc.getGroup(), &k1_point, &one, &k0_point, &neg_a, &A);
+    // Use mbedtls_ecp_muladd to compute B - A
+    mbedtls_ecp_muladd(ecc.getGroup(), &temp_point, &one, &B, &neg_one, &A);
 
-    Serial.println("Garbler computed a*B - a*A");
+    // Compute a * (B - A)
+    ecc.pointMultiply(k1_point, a, temp_point);
 
     uint8_t k1_buf[ECC_POINT_SIZE];
     mbedtls_ecp_point_write_binary(ecc.getGroup(), &k1_point,
                                   MBEDTLS_ECP_PF_UNCOMPRESSED,
                                   &olen, k1_buf, sizeof(k1_buf));
     
-    Serial.print("Garbler k1 point (B/A)^a: ");
+    Serial.print("Garbler k1 point (B-A)*a: ");
     for(size_t i = 0; i < olen; i++) {
         Serial.printf("%02X ", k1_buf[i]);
     }
@@ -206,9 +216,10 @@ void sendWireLabelsOT(WiFiClient& client, const GarbledCircuit::WireLabel& label
     // Cleanup
     mbedtls_ecp_point_free(&A);
     mbedtls_ecp_point_free(&B);
+    mbedtls_ecp_point_free(&temp_point);
     mbedtls_mpi_free(&a);
-    mbedtls_mpi_free(&neg_a);
     mbedtls_mpi_free(&one);
+    mbedtls_mpi_free(&neg_one);
     mbedtls_ecp_point_free(&k0_point);
     mbedtls_ecp_point_free(&k1_point);
 }
